@@ -8,8 +8,8 @@ import torch
 from transformers import BertTokenizerFast
 from torch.utils.data import Dataset, DataLoader, RandomSampler, SequentialSampler
 
-from utils import generate_key, generate_word_id_to_char_id, load_data, load_wn_senses, padding_sent
-from utils import test_load_data
+from WSD_biencoder.utils import generate_key, generate_word_id_to_char_id, load_data, load_wn_senses, padding_sent
+from WSD_biencoder.utils import test_load_data
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ class Feature:
         self,
         idx=None,
         sense_lemma=None,
+        key=None,
         sent_text=None,
         sent_token_ids=None,
         sent_mask_ids=None,
@@ -65,9 +66,11 @@ class Feature:
         location=None,
         label=None,
         sense_name_list=None,
+        sense_key_list=None,
     ):
         self.idx = idx
         self.sense_lemma = sense_lemma
+        self.key = key
         self.sent_text = sent_text
         self.sent_token_ids = sent_token_ids
         self.sent_mask_ids = sent_mask_ids
@@ -77,6 +80,7 @@ class Feature:
         self.location = location
         self.label = label
         self.sense_name_list = sense_name_list
+        self.sense_key_list = sense_key_list
     
     
     def __repr__(self):
@@ -113,14 +117,18 @@ class WSD_Dataset(Dataset):
         sent_mask_ids = torch.LongTensor([f.sent_mask_ids for f in batch])
         start_locs = torch.LongTensor([f.location[0] for f in batch])
         end_locs = torch.LongTensor([f.location[1] for f in batch])
-        labels = torch.LongTensor([f.label for f in batch])
+        if batch[0].label is not None:
+            labels = torch.LongTensor([f.label for f in batch])
+        else:
+            labels = torch.LongTensor([-1 for f in batch])
         
         sense_token_ids_list = [torch.LongTensor(f.sense_token_ids_list) for f in batch]
         sense_mask_ids_list = [torch.LongTensor(f.sense_mask_ids_list) for f in batch]
+        key = [f.key for f in batch]
 
         return sent_token_ids, sent_mask_ids, \
                 start_locs, end_locs, labels, \
-                sense_token_ids_list, sense_mask_ids_list
+                sense_token_ids_list, sense_mask_ids_list, key
 
     
 class WSD_Processor:
@@ -135,9 +143,10 @@ class WSD_Processor:
             self.wn_sense_dict[key] = list()
             for sense in sense_list:
                 definition = wn.lemma_from_key(sense).synset().definition()
-                self.wn_sense_dict[key].append((sense, definition))
-                     
-    
+                name = wn.lemma_from_key(sense).synset().name()
+                self.wn_sense_dict[key].append((sense, definition, name))
+                
+
     def create_examples(self, sent_list):
         examples = []
         logger.info("Create examples")
@@ -164,22 +173,28 @@ class WSD_Processor:
                 logger.info("Encoded text with length {} exceeds max length constraints!".format(len(text_enc["input_ids"])))
                 continue
             
-            for idx in example.sense_dict:
-                sense = example.sense_dict[idx]
+            for idx in example.index_dict:
                 word_loc = example.index_dict[idx]
                 char_loc = word_id_to_char_id[word_loc]
                 next_char_loc = word_id_to_char_id[word_loc+1] if word_loc<len(word_id_to_char_id)-1 else -1
                 
                 lemma, pos = example.lemma_list[word_loc], example.pos_list[word_loc]
-                sense_candidate_list = self.wn_sense_dict[generate_key(lemma, pos)]
-                sense_name_list = [sense_candidate[0] for sense_candidate in sense_candidate_list]
+                key = generate_key(lemma, pos)
+                sense_candidate_list = self.wn_sense_dict[key]
+                sense_key_list = [sense_candidate[0] for sense_candidate in sense_candidate_list]
                 sense_text_list = [sense_candidate[1] for sense_candidate in sense_candidate_list]
-                label = sense_name_list.index(sense)
+                sense_name_list = [sense_candidate[2] for sense_candidate in sense_candidate_list]
+                
+                if hasattr(example, 'sense_dict'):
+                    sense = example.sense_dict[idx]
+                    label = sense_key_list.index(sense)
+                else:
+                    label=None
             
                 start = text_enc.char_to_token(char_loc)
                 end = text_enc.char_to_token(next_char_loc) if next_char_loc >=0 else len(sense_token_ids)
-                location = (start, end)
-                
+                location = (start, end)  
+                                              
                 sense_token_ids_list, sense_mask_ids_list = list(), list()
                 for sense_text in sense_text_list:
                     sense_enc = self.tokenizer(sense_text)
@@ -190,11 +205,11 @@ class WSD_Processor:
                     sense_token_ids_list.append(sense_token_ids)
                     sense_mask_ids_list.append(sense_mask_ids)
                 
-                feature = Feature(idx=idx, sense_lemma=lemma,\
+                feature = Feature(idx=idx, sense_lemma=lemma, key=key, \
                     sent_text=sent_text, sent_token_ids=sent_token_ids, sent_mask_ids=sent_mask_ids,
                     sense_text_list=sense_text_list, sense_token_ids_list=sense_token_ids_list, sense_mask_ids_list=sense_mask_ids_list,
-                    location=location, label=label, sense_name_list=sense_name_list
-                    ) 
+                    location=location, label=label, sense_name_list=sense_name_list, sense_key_list=sense_key_list,
+                ) 
                 features.append(feature)
 
         logger.info("Convert {} features in all".format(len(features)))

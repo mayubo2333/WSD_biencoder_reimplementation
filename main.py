@@ -2,6 +2,8 @@ import os
 import ipdb
 os.environ['MKL_SERVICE_FORCE_INTEL'] = "1"
 if os.environ.get('DEBUG', False): print('\033[92m'+'Running code in DEBUG mode'+'\033[0m')
+import sys
+sys.path.append("../")
 import argparse
 import logging
 
@@ -11,7 +13,7 @@ from transformers import BertConfig, BertTokenizerFast
 from transformers import AdamW, get_linear_schedule_with_warmup 
 
 from processor import WSD_Processor
-from model import BertForWSD
+from model import BertForWSD, BertForWSD_Siamse
 from utils import set_seed, get_pred_label
 
 
@@ -80,14 +82,13 @@ def train(args, model, processor):
                 smooth_loss = .0
 
             if global_step % args.eval_steps == 0:
-                dev_acc = evaluate(args, model, dev_features, dev_dataloader)
-                
+                dev_acc = evaluate(args, model, dev_features, dev_dataloader, best_dev_acc)
                 if dev_acc > best_dev_acc:
                     best_dev_acc = dev_acc
                     model.save()
             
             
-def evaluate(args, model, features, dataloader):
+def evaluate(args, model, features, dataloader, best_acc=0.0):
     gt_list = []
     pred_list = []
     for batch in dataloader:
@@ -111,12 +112,13 @@ def evaluate(args, model, features, dataloader):
     acc = correct_num/len(gt_list)
     logger.info("Acc:{}\tgt num:{}\tcorrect num:{}".format(acc, len(gt_list), correct_num))
     
-    assert(len(features)==len(pred_list))
-    with open(os.path.join(args.output_dir, 'pred.txt'), 'w', encoding='utf-8') as f:
-        for (feature, pred) in zip(features, pred_list):
-            idx = feature.idx
-            sense = feature.sense_name_list[pred]
-            f.write('{} {}\n'.format(idx, sense))
+    if acc>best_acc:
+        assert(len(features)==len(pred_list))
+        with open(os.path.join(args.output_dir, 'best_pred.txt'), 'w', encoding='utf-8') as f:
+            for (feature, pred) in zip(features, pred_list):
+                idx = feature.idx
+                sense = feature.sense_key_list[pred]
+                f.write('{} {}\n'.format(idx, sense))
     
     return acc
     
@@ -132,7 +134,7 @@ def main():
     parser.add_argument("--test_dataset_name", default="ALL")
     
     parser.add_argument("--wn_path", default="./WSD_Evaluation_Framework/Data_Validation/candidatesWN30.txt")
-    parser.add_argument("--output_dir", default='./outputs_exp', type=str)
+    parser.add_argument("--output_dir", default='./outputs', type=str)
     parser.add_argument("--model_name_or_path", default="bert-base-uncased", type=str)
     
     parser.add_argument("--pad_mask_token", default=0, type=int)
@@ -152,10 +154,10 @@ def main():
     parser.add_argument('--eval_steps', default=1000, type=int)
     parser.add_argument('--seed', default=42, type=int)
     
-    parser.add_argument('--loss_self', default=False, action='store_true')
-    parser.add_argument("--normalize", default=False, action="store_true")
+    parser.add_argument("--weight_share", default=False, action="store_true")
     parser.add_argument("--inference_only", default=False, action="store_true")
-    parser.add_argument("--load_checkpoints", default="best_model.ckpt", type=str)
+    parser.add_argument("--embedding_cache", default=False, action="store_true")
+    parser.add_argument("--load_checkpoints", default="./official_ckpt", type=str)
     args = parser.parse_args()
     
     if not os.path.exists(args.output_dir):
@@ -177,12 +179,10 @@ def main():
     config = BertConfig.from_pretrained(args.model_name_or_path)
     config.output_dir = args.output_dir
     config.model_name_or_path = args.model_name_or_path
-    config.loss_self = args.loss_self
-    config.normalize = args.normalize
     config.device = args.device
 
     tokenizer = BertTokenizerFast.from_pretrained(args.model_name_or_path, add_special_tokens=True)
-    model = BertForWSD(config=config)
+    model = BertForWSD(config=config) if not args.weight_share else BertForWSD_Siamse(config=config)
     model.to(args.device)
 
     processor = WSD_Processor(args, tokenizer)
@@ -190,11 +190,19 @@ def main():
     if not args.inference_only:
         logger.info("Training/evaluation parameters %s", args)
         train(args, model, processor)
+        args.load_checkpoints = args.output_dir
     else:
-        logger.info("dev dataloader generation")
-        _, dev_features, dev_dataloader = processor.generate_dataloader('dev')
-        model.load(args.load_checkpoints)
-        evaluate(args, model, dev_features, dev_dataloader)
+        args.output_dir = args.load_checkpoints
+        
+    if args.embedding_cache:
+        model.cache_gloss_embedding(processor, os.path.join(args.output_dir, "gloss_embedding.ckpt"))
+    _, dev_features, dev_dataloader = processor.generate_dataloader('dev')
+    _, test_features, test_dataloader = processor.generate_dataloader('test')
+    model.load(os.path.join(args.load_checkpoints, 'best_model.ckpt'))
+    logger.info("Dev result")
+    evaluate(args, model, dev_features, dev_dataloader)
+    logger.info("Test result")
+    evaluate(args, model, test_features, test_dataloader)
             
 
 if __name__ == "__main__":

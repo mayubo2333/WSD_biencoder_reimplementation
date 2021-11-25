@@ -167,7 +167,7 @@ class WSD_Processor:
             try:
                 sent_token_ids, sent_mask_ids = padding_sent(
                     text_enc["input_ids"], text_enc["attention_mask"],
-                    self.args.max_text_length, self.tokenizer.pad_token_id,
+                    self.args.max_text_length, self.tokenizer.pad_token_id, drop_long=True
                     )
             except:
                 logger.info("Encoded text with length {} exceeds max length constraints!".format(len(text_enc["input_ids"])))
@@ -200,7 +200,7 @@ class WSD_Processor:
                     sense_enc = self.tokenizer(sense_text)
                     sense_token_ids, sense_mask_ids = padding_sent(
                         sense_enc["input_ids"], sense_enc["attention_mask"],
-                        self.args.max_gloss_length, self.tokenizer.pad_token_id,
+                        self.args.max_gloss_length, self.tokenizer.pad_token_id, drop_long=True
                     )       # Glosses are relatively short. No need to check length.
                     sense_token_ids_list.append(sense_token_ids)
                     sense_mask_ids_list.append(sense_mask_ids)

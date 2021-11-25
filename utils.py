@@ -76,10 +76,13 @@ def load_wn_senses(path):
     return wn_senses
 
 
-def padding_sent(input_ids, attention_mask, max_length, pad_token_id, pad_mask_token_id=0, assert_message="Padding failed"):
+def padding_sent(input_ids, attention_mask, max_length, pad_token_id, pad_mask_token_id=0, assert_message="Padding failed", drop_long=False):
     if len(input_ids)> max_length:
-        input_ids = input_ids[:max_length]
-        attention_mask = attention_mask[:max_length]
+        if drop_long:
+            raise AssertionError(assert_message)
+        else:
+            input_ids = input_ids[:max_length]
+            attention_mask = attention_mask[:max_length]
     else:
         input_ids.extend([pad_token_id]*(max_length-len(input_ids)))
         attention_mask.extend([pad_mask_token_id]*(max_length-len(attention_mask)))
